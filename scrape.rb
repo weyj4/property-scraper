@@ -1,5 +1,6 @@
 require 'selenium-webdriver'
 require 'nokogiri'
+require 'csv'
 
 @dr = Selenium::WebDriver.for :firefox
 
@@ -13,25 +14,32 @@ def get_zillow(x)
 end
 
 def get_number_pages
-  @dr.manage.window.maximize
+  @dr.find_element(:id, "listings-menu-label").click
+  @dr.find_element(:xpath, "//li[contains(@id, 'rs-listings')]/div/label/span[contains(@class, 'listing-type-text')]").click
+  sleep 5
   @number = @dr.find_element(:xpath, "//ol[contains(@class, 'zsg-pagination')]/li[last()-1]/a").text
 end
 
 def next_page
-  @dr.find_element(:xpath, "//li[contains(@class, 'zsg-pagination-next')]/a").click
+  url = @url.split(/\//).insert(9, @x.to_s + "_p").join('/')
+  @dr.get(url)
 end
 
 def get_houses
+  @url = @dr.current_url
+  @x = 1
   (@number.to_i-1).times do
     soup = Nokogiri::HTML(@dr.page_source)
-    houses = soup.xpath("//a[contains(@class, 'hdp-link routable')]")
-    houses.each do |house|
+    @houses = soup.xpath("//a[contains(@class, 'hdp-link routable')]")
+    @houses.each do |house|
       @addresses << house.text
       @addresses.map! do |address|
         address = address.gsub(',', '').gsub(/94.../, '').split(' ').join('-') 
       end
     end
+    @x = @x += 1
     next_page
+    @addresses = @addresses.uniq
   end
 end
 
@@ -55,38 +63,57 @@ end
 
 def get_5yrs
   dr = @dr
-  @wait.until { @dr.find_element(:id, 'tp-fiveYears') }
-  button = dr.find_element(:id, 'tp-fiveYears')
-  dr.action.move_to(button).perform
-  dr.action.click(button).perform
+  begin
+    @wait.until { @dr.find_element(:id, 'tp-fiveYears') }
+    button = dr.find_element(:id, 'tp-fiveYears')
+    dr.action.move_to(button).perform
+    dr.action.click(button).perform
+  rescue
+    return false
+  end
 end
 
 def cursor_move
   dr = @dr
-  points = [100, 210, 330, 440, 550]
   el = dr.find_element(:id, 'chart')
   @prices = {}
-  points.each do |point|
-    dr.action.move_to(el,point,150).perform
+  x = 0
+  while x < 600
+    dr.action.move_to(el,x,150).perform
     get_legend
-    @prices[@month] = @legend
+    @month = dr.find_element(:id, 'valueSeries')
+    if @month.text =~ /Feb(.*)/
+      month = @month.text
+      @prices[month] = @legend
+    end
+    x += 10
   end
 end
 
 def get_legend
   dr = @dr
-  @wait.until { @dr.find_element(:class, 'legend-text') }
-  dr.save_screenshot('1.png')
-  @legend = @dr.find_element(:class, 'legend-value').text
-  @month = @dr.find_element(:id, 'valueSeries').text
+  @wait.until { dr.find_element(:class, 'legend-text') }
+  @legend = dr.find_element(:class, 'legend-value').text
+end
+
+def get_comp
+  dr = @dr
+  begin
+    @wait.until { dr.find_element(:xpath, "//section[contains(@class, 'zsg-content-section')]/h3") }
+    comps = dr.find_element(:xpath, "//section[contains(@class, 'zsg-content-section')]/h3").text
+    @comp = comps.split(' ').last
+  rescue
+    return false
+  end
 end
 
 
-get_zillow(@zips[0])
+get_zillow(@zips[1])
 get_number_pages
 get_houses
 
-@data = []
+puts @addresses.length
+
 
 @addresses.each do |address|
   @array = []
@@ -95,12 +122,25 @@ get_houses
   get_zestimate
   @array.push(@zestimate)
   get_5yrs
-  cursor_move
-  @array.push(@prices)
-  get_legend
-  @array.push(@legend)
-  @array.push(@month)
-  @data.push(@array)
+  if get_5yrs == false
+    puts "not found"
+  else
+    cursor_move
+    @prices.each do |el|
+      @array.push(el)
+    end
+    get_legend
+  end
+  if get_comp == false
+    puts "not found"
+  else
+    get_comp
+    @array.push(@comp)
+  end
+  CSV.open("94103.csv", "ab") do |csv|
+    csv << @array
+  end
+  puts @array
 end
 
 
